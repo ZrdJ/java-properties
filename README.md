@@ -1,5 +1,5 @@
 [![License](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)]()
-[![](https://jitpack.io/v/ZrdJ/javachord.svg)](https://jitpack.io/#ZrdJ/java-properties)
+[![](https://jitpack.io/v/ZrdJ/java-properties.svg)](https://jitpack.io/#ZrdJ/java-properties)
 ![GitHub Workflow Status (branch)](https://github.com/zrdj/java-properties/actions/workflows/maven.yml/badge.svg)
 
 # java-properties
