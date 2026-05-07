@@ -32,4 +32,6 @@ build/
 .vscode/
 
 ### Mac OS ###
-.DS_Store
+.DS_Store.claude/settings.local.json
+.claude/skills/
+.claude/.cache/
