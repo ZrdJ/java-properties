@@ -14,22 +14,23 @@ against the range of JDKs the library targets.
 
 ## Requirements
 
-### Requirement: The library is built and packaged against every supported JDK on each push
-`req~distribution.jdk-compatibility-build~1`
+### Requirement: The library is built, tested and packaged against every supported JDK on each push
+`req~distribution.jdk-compatibility-build~2`
 
 `.github/workflows/build.yml` must run `mvn -B -ntp verify` for every push
-to any branch, once each for JDK 11, 17 and 21. `src` contains no test
-files and `pom.xml` declares no test dependency, so `verify` compiles and
-packages the artifact (plus its sources and Javadoc jars) without running
-any tests. A further push to the same branch must cancel the still-running
-build for the previous push on that branch.
+to any branch, once each for JDK 11, 17 and 21. `pom.xml` declares JUnit 4
+and AssertJ as test dependencies and `src/test` holds the suite, so
+`verify` now runs that suite before compiling and packaging the artifact
+(plus its sources and Javadoc jars) — a failing test fails the build. A
+further push to the same branch must cancel the still-running build for
+the previous push on that branch.
 
 #### Scenario: Push to a branch
 
 - **WHEN** a commit is pushed to any branch
 - **THEN** `mvn -B -ntp verify` runs once under JDK 11, once under JDK 17
-  and once under JDK 21, compiling and packaging the artifact without
-  executing any tests
+  and once under JDK 21, running the test suite before compiling and
+  packaging the artifact
 
 #### Scenario: Second push while the first build is still running
 

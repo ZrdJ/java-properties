@@ -66,6 +66,23 @@
             <version>${slf4j.version}</version>
         </dependency>
 
+        <!-- Test: JUnit 4, matching zrdj/java-identifiers and zrdj/java-predicates. Deliberately
+             not JUnit 5: Maven 3.8.7's default surefire (2.12.4) runs JUnit-4 tests out of the
+             box, so pinning surefire to a newer major is not needed here. JUnit 5 would need
+             that pin (2.12.4 silently reports "Tests run: 0" and stays green), which is exactly
+             the trap this repo avoids by staying on 4. -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>3.27.7</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 
