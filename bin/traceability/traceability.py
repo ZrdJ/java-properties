@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # GENERIERT aus personal/tools-ref/traceability/ — nicht hier editieren; Aenderungen gehoeren nach ~/.claude/tools-ref/traceability/.
 # source: personal-provider-ref
-# ref-hash: sha256:db2f327b0c3fa69e9a3416c90a062c42b6dfe046149c59164e1752bc22304760
+# ref-hash: sha256:e76cfbc5dcf2fb98d5403fbe8552b57c92abcdd461245c305280e08ca30c8843
 """
 traceability.py — prueft die Verkettung zwischen Anforderungen und Tests.
 
@@ -12,6 +12,12 @@ Zwei Richtungen, absichtlich verschieden hart:
 
 Waeren beide hart, stuende der Lauf am ersten Tag rot und wuerde binnen Wochen
 umgangen. Waere keine hart, meldete ein toter Verweis nichts.
+
+Eine dritte Haerte, unabhaengig von beiden: der Lauf berichtet immer, wieviele
+Testdateien er tatsaechlich gescannt hat (siehe die Zusammenfassungszeile) -
+"0 Verweise" ist fuer eine einzelne Anforderung legitim, "0 gescannte Dateien
+im ganzen Repo trotz testaehnlicher Quellen" ist es nicht und bricht mit
+Exit 2 ab (collect_references).
 
 Die Regeln stehen im Skill `traceability`; hier steht ihre Umsetzung. Wo dieses
 Skript laeuft und mit welchen Argumenten, steht in der CLAUDE.md des Repos.
@@ -24,10 +30,12 @@ Rueckgabe: 0 sauber · 1 Befunde in Richtung 1 · 2 Aufruf- oder Selbstpruefungs
 """
 import argparse
 import hashlib
+import io
 import re
 import sys
 import tempfile
 from collections import defaultdict
+from contextlib import redirect_stderr
 from pathlib import Path
 
 # Muss deckungsgleich mit bin/vendor-sync.py bleiben. Bewusst dupliziert und
@@ -187,12 +195,49 @@ def collect_requirements(spec_root: Path):
     return definitions, removed, tombstones, duplicates
 
 
+# ------------------------------------------------------ Ungescannte Tests
+#
+# Ausgangspunkt: dreimal ist in dieser Arbeit dieselbe Fehlerklasse
+# aufgetreten - eine Pruefung meldet Erfolg, ohne etwas geprueft zu haben. Am
+# naechsten an diesem Werkzeug: TEST_PATTERNS sucht *Test.java, ein Repo hielt
+# seine @Test-Methoden aber in Abstract*Testcase.java - null Treffer, null
+# Verweise, gruen. "0 Verweise" ist fuer eine einzelne Anforderung legitim
+# (siehe distribution); "0 gescannte Dateien im ganzen Repo, obwohl
+# testaehnliche Quelldateien existieren" ist es nicht. Die Heuristik unten
+# unterscheidet beides, ohne auf eine feste Namensliste angewiesen zu sein:
+# sie zerlegt Datei- und Verzeichnisnamen in Woerter (camelCase/snake_case)
+# und prueft, ob eines mit "test" beginnt - faengt "AbstractFooTestcase.java"
+# und "tests/bar.go" gleichermassen, ohne bei "latest"/"contest"/"detest"
+# anzuschlagen (die zerlegen sich nicht zu einem Wort, das mit "test" beginnt).
+
+def _words(stem: str):
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", stem)
+    return [w.lower() for w in re.split(r"[^A-Za-z0-9]+", spaced) if w]
+
+
+def _looks_like_test_source(root: Path, p: Path) -> bool:
+    if p.suffix not in SOURCE_SUFFIXES:
+        return False
+    for part in p.relative_to(root).parts[:-1]:
+        if any(w.startswith("test") for w in _words(part)):
+            return True
+    return any(w.startswith("test") for w in _words(p.stem))
+
+
 def collect_references(root: Path, extra_sources):
-    """Testdateien plus namentlich genannte Testhilfs-Pakete.
+    """(referenzen, Zahl der gescannten Dateien) - Testdateien plus namentlich
+    genannte Testhilfs-Pakete.
 
     Absichtlich nicht "jede Quelldatei": die Konvention verkettet Tests, und ein
     engerer Scan haelt sie wenigstens teilweise erzwingbar. Ein Vertragsszenario
     ausserhalb einer Testdatei wird ueber --source nachgereicht.
+
+    Scannt der Lauf am Ende NICHTS (weder TEST_PATTERNS noch --source treffen),
+    ist das fuer sich genommen kein Fehler - ein Repo kann legitim ganz ohne
+    Tests sein. Bricht wird es erst, wenn trotzdem Dateien im Baum liegen, die
+    wie Tests aussehen (_looks_like_test_source): dann hat die Pruefung nicht
+    "nichts gefunden", sondern "am falschen Ort gesucht", und das ist ein
+    Aufruffehler (exit 2), keine stille Null.
     """
     files = set()
     for pattern in TEST_PATTERNS:
@@ -205,20 +250,35 @@ def collect_references(root: Path, extra_sources):
             if p.is_file() and p.suffix in SOURCE_SUFFIXES:
                 files.add(p)
 
+    if not files:
+        candidates = sorted(p for p in _files(root, "*")
+                             if _looks_like_test_source(root, p))
+        if candidates:
+            listed = "\n".join(f"  - {c.relative_to(root)}" for c in candidates[:10])
+            more = (f"\n  ... und {len(candidates) - 10} weitere"
+                     if len(candidates) > 10 else "")
+            fail(
+                "FEHLER: 0 Testdateien gescannt (Muster "
+                f"{', '.join(TEST_PATTERNS)}), aber Dateien, die wie Tests "
+                f"aussehen, liegen unter {root}:\n{listed}{more}\n"
+                "        TEST_PATTERNS passt nicht, oder --source fehlt.\n"
+                "        Ein Repo ganz ohne Tests waere hier ohne solche "
+                "Kandidaten durchgelaufen.")
+
     references = []
     for p in sorted(files):
         for line_no, line in enumerate(p.read_text(encoding="utf-8",
                                                      errors="replace").split("\n"), start=1):
             for m in REFERENCE.finditer(line):
                 references.append(Reference(m.group(1), int(m.group(2)), p, line_no))
-    return references
+    return references, len(files)
 
 
 # ----------------------------------------------------------------- Pruefen
 
 def analyse(spec_root: Path, source_root: Path, extra_sources=()):
     definitions, removed, tombstones, findings = collect_requirements(spec_root)
-    references = collect_references(source_root, extra_sources)
+    references, scanned = collect_references(source_root, extra_sources)
     findings = list(findings)
     counts = defaultdict(int)
 
@@ -256,7 +316,7 @@ def analyse(spec_root: Path, source_root: Path, extra_sources=()):
                 f"req~{r.base} wurde entfernt, ohne Nachfolger",
                 r.file, r.line))
 
-    return definitions, counts, findings
+    return definitions, counts, findings, scanned
 
 
 # ----------------------------------------------------------------- Records
@@ -358,15 +418,15 @@ def analyse_records(spec_root: Path, records_root: Path):
     return persons, targets, findings
 
 
-def report(definitions, counts, findings, records=None, output=sys.stdout):
+def report(definitions, counts, findings, scanned, records=None, output=sys.stdout):
     print("Verkettung\n", file=output)
     for base in sorted(definitions):
         a = definitions[base]
         print(f"  {counts[base]:>3} Verweise  req~{base}~{a.revision}  {a.title}",
               file=output)
     zero = sum(1 for b in definitions if counts[b] == 0)
-    print(f"\n{len(definitions)} Anforderungen, {sum(counts.values())} Verweise, "
-          f"{zero} ohne Verweis.", file=output)
+    print(f"\n{len(definitions)} Anforderungen, {sum(counts.values())} Verweise aus "
+          f"{scanned} Testdatei(en), {zero} ohne Verweis.", file=output)
     if records is not None:
         persons, targets = records
         print("\nRecords\n", file=output)
@@ -439,6 +499,10 @@ def self_check():
 
 
 # ----------------------------------------------------------------- Selbsttest
+
+# Sentinel statt Finding-Art: dieser Fall erwartet keinen Finding-Katalog,
+# sondern dass analyse() selbst per fail() mit exit 2 abbricht.
+ABORT = "__abort__"
 
 FIXTURES = {
     "sauber": ({
@@ -566,6 +630,35 @@ FIXTURES = {
             "`req~zugang.ohne-anmeldung~1`\n",
         "a_test.go": "// [impl->req~zugang.ohne-anmeldung~1]\n",
     }, []),
+
+    # Die drei Faelle unten decken die Haertung ab: TEST_PATTERNS trifft
+    # nichts, obwohl das Repo testaehnliche Quelldateien hat (ABORT, exit 2),
+    # ein Repo ganz ohne Tests bleibt legitim (leer, kein Abbruch), und ein
+    # haeufiges Wort, das zufaellig "test" enthaelt, loest keinen Fehlalarm
+    # aus (die Wortgrenzen-Heuristik trennt "Testcase" von "Latest").
+
+    "testaehnliche datei ohne treffer bricht ab": ({
+        "docs/specs/zugang/spec.md":
+            "### Requirement: Ohne Anmeldung kein Zugriff\n"
+            "`req~zugang.ohne-anmeldung~1`\n",
+        "src/test/java/testcases/AbstractZugangTestcase.java":
+            "// [impl->req~zugang.ohne-anmeldung~1]\n"
+            "abstract class AbstractZugangTestcase { }\n",
+    }, [ABORT]),
+
+    "repo ganz ohne tests bleibt legitim": ({
+        "docs/specs/zugang/spec.md":
+            "### Requirement: Ohne Anmeldung kein Zugriff\n"
+            "`req~zugang.ohne-anmeldung~1`\n",
+        "src/main/java/Zugang.java": "class Zugang {}\n",
+    }, []),
+
+    "latest ist kein testaehnlicher dateiname": ({
+        "docs/specs/zugang/spec.md":
+            "### Requirement: Ohne Anmeldung kein Zugriff\n"
+            "`req~zugang.ohne-anmeldung~1`\n",
+        "src/main/java/LatestConfig.java": "class LatestConfig {}\n",
+    }, []),
 }
 
 
@@ -579,7 +672,23 @@ def selftest() -> int:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
             extra = ["contracttest"] if (root / "contracttest").is_dir() else []
-            _, counts, findings = analyse(root / "docs", root, extra)
+
+            if expected == [ABORT]:
+                # fail() schreibt nach stderr und beendet den Prozess selbst -
+                # das gehoert hier abgefangen, nicht in der Ausgabe des
+                # Selbsttests zu erscheinen.
+                stderr = io.StringIO()
+                try:
+                    with redirect_stderr(stderr):
+                        analyse(root / "docs", root, extra)
+                    failures.append(f"  {name}: erwarteter Abbruch blieb aus")
+                except SystemExit as e:
+                    if e.code != 2:
+                        failures.append(
+                            f"  {name}: Abbruch mit Exit {e.code}, erwartet 2")
+                continue
+
+            _, counts, findings, scanned = analyse(root / "docs", root, extra)
             records = analyse_records(root / "docs", root / "docs" / "records")
             findings = findings + (records[2] if records is not None else [])
             kinds = sorted(f.kind for f in findings)
@@ -596,6 +705,10 @@ def selftest() -> int:
                 failures.append(f"  {name}: Meeting wurde nicht als Ziel mit 0 Folgen gezaehlt")
             elif name == "records: kein verzeichnis" and records is not None:
                 failures.append(f"  {name}: Records-Pruefung haette uebersprungen werden muessen")
+            elif name == "sauber" and scanned != 1:
+                failures.append(f"  {name}: erwartet 1 gescannte Datei, gezaehlt {scanned}")
+            elif name == "repo ganz ohne tests bleibt legitim" and scanned != 0:
+                failures.append(f"  {name}: erwartet 0 gescannte Dateien, gezaehlt {scanned}")
 
     if failures:
         print(f"Selbsttest: {len(failures)} von {len(FIXTURES)} Faellen fehlgeschlagen.")
@@ -634,13 +747,13 @@ def main():
     if not spec_root.is_dir():
         fail(f"FEHLER: --spec-root zeigt auf kein Verzeichnis: {args.spec_root}")
 
-    definitions, counts, findings = analyse(
+    definitions, counts, findings, scanned = analyse(
         spec_root, Path(args.source_root).resolve(), args.source)
 
     records = analyse_records(spec_root, Path(args.records_root).resolve())
     all_findings = findings + (records[2] if records is not None else [])
 
-    report(definitions, counts, all_findings,
+    report(definitions, counts, all_findings, scanned,
            records=(records[0], records[1]) if records is not None else None)
     sys.exit(1 if all_findings else 0)
 
