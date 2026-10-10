@@ -3,7 +3,7 @@
 // platform modules: it compiles and runs today, measured against a five-module consumer on JDK 25,
 // and only because that consumer packages into one jar and starts from the classpath, where the
 // runtime never resolves the name at all.
-// See docs/project/decisions/2026-09-07-real-module-descriptor-instead-of-automatic-name.md.
+// See .docs/project/decisions/2026-09-07-real-module-descriptor-instead-of-automatic-name.md.
 module com.github.zrdj.java.properties {
     requires org.slf4j;
 

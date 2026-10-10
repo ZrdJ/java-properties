@@ -13,7 +13,7 @@ interface, composable and decoratable (e.g. retry, name mapping), with typed acc
 an `ApplicationProperty` enum.
 
 Repo-specific knowledge. What concerns more than this repo lives in the knowledge layer
-of the WS root (`~/workspaces/personal/docs/`).
+of the WS root (`~/workspaces/personal/.docs/`).
 
 ## Folders
 
